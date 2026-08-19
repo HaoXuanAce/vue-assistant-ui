@@ -2,6 +2,7 @@
 import { Archive, ChevronDown, ChevronRight, CircleHelp, Ellipsis, FolderOpen, LogIn, Menu, MessageSquare, MoreHorizontal, Plus, Search, Settings, Sparkles, UserRound, X } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import Thread from '@/components/Thread.vue'
+import type { ComposerItem, ComposerTokenRenderer } from '@/components/tiptap'
 
 type Section = 'Today' | 'Yesterday' | 'Previous 7 days'
 interface Conversation { id: string; title: string; time: string; section: Section }
@@ -18,6 +19,22 @@ const query = ref('')
 const sidebarOpen = ref(false)
 const accountOpen = ref(false)
 const thread = ref<InstanceType<typeof Thread> | null>(null)
+
+const composerItems: ComposerItem[] = [
+  { id: 'weather', trigger: '@', kind: 'mention', label: 'Weather', description: 'Get a city\'s current weather', icon: 'W' },
+  { id: 'search', trigger: '@', kind: 'mention', label: 'Web search', description: 'Search public web content', icon: 'S' },
+  { id: 'knowledge', trigger: '@', kind: 'mention', label: 'Knowledge base', description: 'Search connected documents', icon: 'K' },
+  { id: 'summarize', trigger: '/', kind: 'command', label: 'Summarize', description: 'Create a concise summary', icon: 'S' },
+  { id: 'translate', trigger: '/', kind: 'command', label: 'Translate', description: 'Translate the current content', icon: 'T' },
+  { id: 'plan', trigger: '/', kind: 'command', label: 'Make a plan', description: 'Create clear execution steps', icon: 'P' },
+]
+
+const renderComposerToken: ComposerTokenRenderer = (item) => ({
+  label: `${item.trigger}${item.label}`,
+  className: item.kind === 'command'
+    ? 'mx-0.5 inline-flex items-center rounded-md bg-amber-100 px-1.5 py-0.5 text-xs font-semibold leading-5 text-amber-800 ring-1 ring-amber-200'
+    : 'mx-0.5 inline-flex items-center rounded-md bg-emerald-100 px-1.5 py-0.5 text-xs font-semibold leading-5 text-emerald-800 ring-1 ring-emerald-200',
+})
 
 const sections = computed(() => {
   const visible = conversations.value.filter(item => item.title.toLowerCase().includes(query.value.toLowerCase()))
@@ -108,7 +125,12 @@ function newChat() {
           <h1 class="text-2xl font-semibold md:text-3xl">What can I help with?</h1>
           <p class="mt-2 text-sm text-neutral-400">Ask anything to start a new conversation.</p>
         </div>
-        <Thread ref="thread" class="w-full" />
+        <Thread
+          ref="thread"
+          class="w-full"
+          :composer-items="composerItems"
+          :token-renderer="renderComposerToken"
+        />
       </section>
       <footer class="pb-3 text-center text-[11px] text-neutral-400">Assistant can make mistakes. Check important info.</footer>
     </main>

@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ArrowUp, FileText, Mic, Plus, Square, X } from '@lucide/vue'
+import type { JSONContent } from '@tiptap/core'
 import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { TiptapComposer, TiptapComposerInput, TiptapComposerTriggerPopover } from '@/components/tiptap'
+import type { ComposerItem, ComposerSubmitPayload, ComposerTokenRenderer } from '@/components/tiptap'
 
 export interface ThreadAttachment {
   id: string
@@ -13,16 +16,10 @@ export interface ThreadMessage {
   id: string
   role: 'assistant' | 'user'
   content: string
+  html?: string
+  json?: JSONContent
   attachments?: ThreadAttachment[]
 }
-
-const props = withDefaults(defineProps<{
-  placeholder?: string
-  disabled?: boolean
-}>(), {
-  placeholder: 'Send a message...',
-  disabled: false,
-})
 
 const emit = defineEmits<{
   send: [message: ThreadMessage]
@@ -37,15 +34,33 @@ interface PendingAttachment extends ThreadAttachment {
   previewUrl?: string
 }
 
-const draft = ref('')
 const attachments = ref<PendingAttachment[]>([])
 const isRecording = ref(false)
-const textarea = ref<HTMLTextAreaElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const viewport = ref<HTMLDivElement | null>(null)
+const composer = ref<InstanceType<typeof TiptapComposer> | null>(null)
+const composerHtml = ref('<p></p>')
 
-const canSend = computed(() => (
-  !props.disabled && (draft.value.trim().length > 0 || attachments.value.length > 0)
+const props = withDefaults(defineProps<{
+  placeholder?: string
+  disabled?: boolean
+  composerItems?: ComposerItem[]
+  tokenRenderer?: ComposerTokenRenderer
+}>(), {
+  placeholder: 'Send a message...',
+  disabled: false,
+  composerItems: () => [
+    { id: 'weather', trigger: '@', kind: 'mention', label: 'Weather', description: 'Get a city\'s current weather', icon: 'W' },
+    { id: 'search', trigger: '@', kind: 'mention', label: 'Web search', description: 'Search public web content', icon: 'S' },
+    { id: 'knowledge', trigger: '@', kind: 'mention', label: 'Knowledge base', description: 'Search your connected documents', icon: 'K' },
+    { id: 'summarize', trigger: '/', kind: 'command', label: 'Summarize', description: 'Turn the context into a concise summary', icon: 'S' },
+    { id: 'translate', trigger: '/', kind: 'command', label: 'Translate to Chinese', description: 'Translate the current content', icon: 'T' },
+    { id: 'plan', trigger: '/', kind: 'command', label: 'Make a plan', description: 'Create clear execution steps', icon: 'P' },
+  ],
+})
+
+const canSend = computed(() => !props.disabled && (
+  attachments.value.length > 0 || Boolean(composerHtml.value && composerHtml.value !== '<p></p>')
 ))
 
 function createId() {
@@ -56,12 +71,6 @@ function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
-function resizeTextarea() {
-  if (!textarea.value) return
-  textarea.value.style.height = '0px'
-  textarea.value.style.height = `${Math.min(textarea.value.scrollHeight, 176)}px`
 }
 
 function chooseFiles() {
@@ -105,13 +114,15 @@ async function scrollToLatest() {
   })
 }
 
-function sendMessage() {
+function sendMessage(payload?: ComposerSubmitPayload) {
   if (!canSend.value) return
 
   const message: ThreadMessage = {
     id: createId(),
     role: 'user',
-    content: draft.value.trim(),
+    content: payload?.text.trim() ?? '',
+    html: payload?.html,
+    json: payload?.json,
     attachments: attachments.value.map(({ id, name, size, type }) => ({ id, name, size, type })),
   }
 
@@ -122,20 +133,12 @@ function sendMessage() {
     if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
   }
 
-  draft.value = ''
   attachments.value = []
   isRecording.value = false
-  nextTick(() => {
-    resizeTextarea()
-    textarea.value?.focus()
-  })
+  composerHtml.value = '<p></p>'
+  composer.value?.clearContent()
+  nextTick(() => composer.value?.focus())
   scrollToLatest()
-}
-
-function handleKeydown(event: KeyboardEvent) {
-  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
-  event.preventDefault()
-  sendMessage()
 }
 
 function addMessage(message: Omit<ThreadMessage, 'id'> & { id?: string }) {
@@ -148,6 +151,13 @@ function addMessage(message: Omit<ThreadMessage, 'id'> & { id?: string }) {
 
 function clear() {
   messages.value = []
+  for (const attachment of attachments.value) {
+    if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
+  }
+  attachments.value = []
+  isRecording.value = false
+  composerHtml.value = '<p></p>'
+  composer.value?.clearContent()
 }
 
 onBeforeUnmount(() => {
@@ -181,7 +191,8 @@ defineExpose({ addMessage, clear })
           class="max-w-[85%] text-[15px] leading-7 text-[#242424] sm:max-w-[72%]"
           :class="message.role === 'user' ? 'rounded-3xl bg-[#eeeeee] px-5 py-3' : 'px-1'"
         >
-          <p v-if="message.content" class="whitespace-pre-wrap break-words">
+          <div v-if="message.html" class="message-content" v-html="message.html" />
+          <p v-else-if="message.content" class="whitespace-pre-wrap break-words">
             {{ message.content }}
           </p>
           <div v-if="message.attachments?.length" class="mt-2 flex flex-wrap gap-2">
@@ -198,11 +209,19 @@ defineExpose({ addMessage, clear })
       </article>
     </div>
 
-    <form
-      class="border rounded-4xl shadow-lg p-4 relative shrink-0 bg-white transition-shadow focus-within:border-[#d2d2d2] focus-within:shadow-[0_10px_32px_rgba(0,0,0,0.09)]"
-      @submit.prevent="sendMessage"
+    <TiptapComposer
+      ref="composer"
+      :items="props.composerItems"
+      :placeholder="props.placeholder"
+      :disabled="props.disabled"
+      submit-on-empty
+      :token-renderer="props.tokenRenderer"
+      class="shrink-0"
+      @update:html="composerHtml = $event"
+      @submit="sendMessage"
     >
-      <div v-if="attachments.length" class="mb-2 flex gap-2 overflow-x-auto pb-1">
+      <div class="relative shrink-0 rounded-4xl border bg-white p-4 shadow-lg transition-shadow focus-within:border-[#d2d2d2] focus-within:shadow-[0_10px_32px_rgba(0,0,0,0.09)]">
+        <div v-if="attachments.length" class="mb-2 flex gap-2 overflow-x-auto pb-1">
         <div
           v-for="attachment in attachments"
           :key="attachment.id"
@@ -233,17 +252,11 @@ defineExpose({ addMessage, clear })
         </div>
       </div>
 
-      <textarea
-        ref="textarea"
-        v-model="draft"
-        rows="1"
-        :placeholder="placeholder"
-        :disabled="disabled"
-        class="block min-h-16 max-h-44 w-full resize-none overflow-y-auto bg-transparent px-3 py-1 text-[18px] leading-7 text-[#242424] outline-none placeholder:text-[#aaa] disabled:cursor-not-allowed disabled:opacity-50 sm:text-[19px]"
-        aria-label="Message"
-        @input="resizeTextarea"
-        @keydown="handleKeydown"
-      />
+      <div class="relative">
+        <TiptapComposerInput />
+        <TiptapComposerTriggerPopover trigger="@" />
+        <TiptapComposerTriggerPopover trigger="/" />
+      </div>
 
       <div class="mt-1 flex h-11 items-center justify-between px-1">
         <button
@@ -297,7 +310,20 @@ defineExpose({ addMessage, clear })
             <ArrowUp class="size-6" :stroke-width="2" />
           </button>
         </div>
+        </div>
       </div>
-    </form>
+    </TiptapComposer>
   </section>
 </template>
+
+<style scoped>
+.message-content :deep(p) {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message-content :deep(p + p) {
+  margin-top: 0.5rem;
+}
+</style>
